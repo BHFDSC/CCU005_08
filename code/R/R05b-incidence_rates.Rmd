@@ -1,0 +1,565 @@
+---
+title: "R05-incidence_rates"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width=9, fig.height=5.5) 
+
+library(tidyverse)
+library(finalfit)
+library(lubridate)
+library(PHEindicatormethods)
+library(kableExtra)
+
+dir.create(here::here("outputs", "R05b-incidence_rates"), recursive = TRUE)
+
+source(here::here("R", "R00-functions.R"))
+                  
+```
+
+# Load denominator datasets
+
+```{r}
+
+denominator_annual_overall = read_rds(here::here("data", "denominator_annual_overall.rds"))
+denominator_annual_region = read_rds(here::here("data", "denominator_annual_region.rds"))
+denominator_monthly_overall = read_rds(here::here("data", "denominator_monthly_overall.rds"))
+denominator_monthly_region = read_rds(here::here("data", "denominator_monthly_region.rds"))
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+```
+
+
+
+
+```{r}
+
+# Overall label
+cohort = cohort %>% 
+  mutate(
+    overall = "Overall" %>% 
+      factor() %>% 
+      ff_label("Overall")
+  )
+
+# Year and month of stroke
+cohort = cohort %>% 
+  mutate(
+    stroke_month = index_stroke_date %>% 
+      floor_date(unit = "month"),
+    stroke_year = index_stroke_date %>% 
+      floor_date(unit = "year")
+  )
+
+# Long format for source membership
+cohort_long = cohort %>% 
+  select(row_id, person_id, index_stroke_date, stroke_month, stroke_year,
+         age_group, sex, region,
+         stroke_gdppr, stroke_hes_apc, stroke_ssnap, stroke_deaths) %>% 
+  pivot_longer(
+    cols = c(stroke_gdppr, stroke_hes_apc, stroke_ssnap, stroke_deaths),
+    names_to = "data_source",
+    values_to = "membership"
+  ) %>% 
+  filter(membership == 1) %>% 
+  mutate(
+    data_source = data_source %>% 
+      str_remove("stroke_")
+  )
+
+# Variable labels
+vlabels = extract_variable_label(cohort)
+
+```
+
+
+# Calculate yearly and monthly age- and sex- standardised incidence rates
+
+## Overall, Stroke type, Sex, Age group
+
+```{r}
+
+# Yearly
+var_strata = c("overall", "stroke_type_harmonised", "sex", "age_group")
+
+yearly_sir_overall = var_strata %>% 
+  map_dfr(
+    .f = function(.var){
+      
+      cohort %>% 
+        count(stroke_year, age_group, sex, !!sym(.var)) %>% 
+        mutate(
+          strata_var = .var,
+          strata_label = vlabels[.var]
+        ) %>% 
+        full_join(
+          denominator_annual_overall %>% 
+            rename(stroke_year = year)
+        ) %>% 
+        group_by(strata_var, strata_label, stroke_year, !!sym(.var)) %>% 
+        phe_dsr(
+          x = n,                
+          n = person_years,             
+          stdpop = esp_weights,             
+          stdpoptype = "field"
+        ) %>%
+        rename(level = !!sym(.var)) %>% 
+        ungroup()
+    }
+  )
+
+# Monthly
+
+monthly_sir_overall = var_strata %>% 
+  map_dfr(
+    .f = function(.var){
+      
+      cohort %>% 
+        count(stroke_month, age_group, sex, !!sym(.var)) %>% 
+        mutate(
+          strata_var = .var,
+          strata_label = vlabels[.var]
+        ) %>% 
+        full_join(
+          denominator_monthly_overall %>% 
+            rename(stroke_month = month)
+        ) %>% 
+        group_by(strata_var, strata_label, stroke_month, !!sym(.var)) %>% 
+        phe_dsr(
+          x = n,                
+          n = person_years,             
+          stdpop = esp_weights,             
+          stdpoptype = "field"
+        ) %>%
+        rename(level = !!sym(.var)) %>% 
+        ungroup()
+    }
+  )
+
+
+
+```
+
+## Region
+
+```{r}
+
+# Yearly
+yearly_sir_region = cohort %>% 
+        count(stroke_year, age_group, sex, region) %>% 
+        mutate(
+          strata_var = "region",
+          strata_label = "Region"
+        ) %>% 
+        full_join(
+          denominator_annual_region %>% 
+            rename(stroke_year = year)
+        ) %>% 
+        group_by(strata_var, strata_label, stroke_year, region) %>% 
+        phe_dsr(
+          x = n,                
+          n = person_years,             
+          stdpop = esp_weights,             
+          stdpoptype = "field"
+        ) %>%
+        rename(level = region) %>% 
+        ungroup()
+
+# Monthly
+monthly_sir_region = cohort %>% 
+        count(stroke_month, age_group, sex, region) %>% 
+        mutate(
+          strata_var = "region",
+          strata_label = "Region"
+        ) %>% 
+        full_join(
+          denominator_monthly_region %>% 
+            rename(stroke_month = month)
+        ) %>% 
+        group_by(strata_var, strata_label, stroke_month, region) %>% 
+        phe_dsr(
+          x = n,                
+          n = person_years,             
+          stdpop = esp_weights,             
+          stdpoptype = "field"
+        ) %>%
+        rename(level = region) %>% 
+        ungroup()
+
+```
+
+
+## Data source membership
+
+```{r}
+
+source_membership = list(
+  "GDPPR" = c("gdppr"),
+  "HES-APC" = c("hes_apc"),
+  "SSNAP" = c("ssnap"),
+  "ONS Deaths" = c("deaths"),
+  "GDPPR or HES-APC" = c("gdppr", "hes_apc"),
+  "GDPPR or SSNAP" = c("gdppr", "ssnap"),
+  "HES-APC or SSNAP" = c("hes_apc", "ssnap"),
+  "GDPPR or HES-APC or SSNAP or ONS Deaths" = c("gdppr", "hes_apc", "ssnap", "deaths")
+)
+
+
+## Yearly count
+
+yearly_count_source_membership = source_membership %>% 
+  map_dfr(
+    function(.x){
+      cohort_long %>% 
+        filter(data_source %in% .x) %>%
+        group_by(stroke_year, age_group, sex) %>% 
+        summarise(
+          n = n_distinct(person_id)
+        ) %>% 
+        ungroup()
+    },
+    .id = "data_source_membership"
+  ) %>% 
+  full_join(
+    denominator_annual_overall %>% 
+      rename(stroke_year = year)
+  )
+
+
+## Yearly standardised incidence rate
+yearly_sir_data_source_membership = yearly_count_source_membership %>% 
+  group_by(stroke_year, data_source_membership) %>% 
+  phe_dsr(
+      x = n,                
+      n = person_years,             
+      stdpop = esp_weights,             
+      stdpoptype = "field"
+    ) %>% 
+    ungroup() %>% 
+  mutate(
+    strata_var = "data_source_membership",
+    strata_label = "Data source membership"
+  ) %>% 
+  rename(level = data_source_membership) %>% 
+  mutate(
+    level = level %>% 
+      factor() %>% 
+      fct_relevel(names(source_membership))
+  ) %>% 
+  arrange(stroke_year, level) %>% 
+  mutate(level = level %>% as.character())
+
+
+
+## Monthly count
+
+monthly_count_source_membership = source_membership %>% 
+  map_dfr(
+    function(.x){
+      cohort_long %>% 
+        filter(data_source %in% .x) %>%
+        group_by(stroke_month, age_group, sex) %>% 
+        summarise(
+          n = n_distinct(person_id)
+        ) %>% 
+        ungroup()
+    },
+    .id = "data_source_membership"
+  ) %>% 
+  full_join(
+    denominator_monthly_overall %>% 
+      rename(stroke_month = month)
+  )
+
+# Monthly standardised incidence rate
+monthly_sir_data_source_membership = monthly_count_source_membership %>% 
+  group_by(stroke_month, data_source_membership) %>% 
+  phe_dsr(
+      x = n,                
+      n = person_years,             
+      stdpop = esp_weights,             
+      stdpoptype = "field"
+    ) %>% 
+    ungroup() %>% 
+  mutate(
+    strata_var = "data_source_membership",
+    strata_label = "Data source membership"
+  ) %>% 
+  rename(level = data_source_membership)
+
+
+```
+
+
+# Yearly age- and sex- standardised incidence rate
+
+```{r}
+
+yearly_sir_long = yearly_sir_overall %>% 
+  bind_rows(yearly_sir_region) %>% 
+  bind_rows(yearly_sir_data_source_membership)
+
+yearly_sir_long = yearly_sir_long %>% 
+  mutate(
+    total_count = case_when(
+      total_count > 10 ~ plyr::round_any(total_count, 5),
+      TRUE ~ 0
+    ),
+    total_pop = case_when(
+      total_pop > 10 ~ plyr::round_any(total_pop, 5),
+      TRUE ~ 0
+    )
+  )
+
+write_csv(
+  yearly_sir_long,
+  here::here(
+    "outputs", "R05b-incidence_rates", "yearly_standardised_incidence_rate_long.csv"
+  )
+)
+
+yearly_sir_wide = yearly_sir_long %>% 
+  mutate(
+    sir_tidy = paste0(
+      round_tidy(value, 1), " (",
+      round_tidy(lowercl, 1), ", ",
+      round_tidy(uppercl, 1), ")"
+    ),
+    year_tidy = year(stroke_year) %>% 
+      as.character()
+  ) %>% 
+  select(strata_label, level, year_tidy, sir_tidy) %>% 
+  pivot_wider(names_from = year_tidy, values_from = sir_tidy)
+
+write_csv(
+  yearly_sir_wide,
+  here::here(
+    "outputs", "R05b-incidence_rates", "yearly_standardised_incidence_rate_wide.csv"
+  )
+)
+
+yearly_sir_wide %>% 
+  mykable()
+
+
+```
+
+# Monthly plots
+
+```{r}
+
+monthly_sir_long = monthly_sir_overall %>% 
+  bind_rows(monthly_sir_region) %>% 
+  bind_rows(monthly_sir_data_source_membership)
+
+```
+
+
+## Overall
+
+```{r}
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("overall")) %>%
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "Overall",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE)) +
+  theme_bw()
+  
+
+```
+
+## Stroke type
+
+
+```{r}
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("stroke_type_harmonised")) %>%
+  mutate(
+    level = level %>% 
+      factor() %>% 
+      fct_reorder(value, .desc = FALSE)
+  ) %>% 
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl, colour = level, fill = level)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "By Stoke Type",
+    fill = "Stroke type",
+    colour = "Stroke type",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE)) +
+  theme_bw()
+  
+
+```
+
+
+## Sex
+
+```{r}
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("sex")) %>%
+  mutate(
+    level = level %>% 
+      factor() %>% 
+      fct_reorder(value, .desc = FALSE)
+  ) %>% 
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl, colour = level, fill = level)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "By Sex",
+    fill = "Sex",
+    colour = "Sex",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE)) +
+  theme_bw()
+
+```
+
+
+## Age group
+
+```{r}
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("age_group")) %>%
+  mutate(
+    level = level %>% 
+      factor() %>% 
+      fct_reorder(value, .desc = FALSE)
+  ) %>% 
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl, colour = level, fill = level)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "By Age Group",
+    fill = "Age group (years)",
+    colour = "Age group (years)",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE)) +
+  theme_bw()
+
+```
+
+
+## Region
+
+```{r}
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("region")) %>%
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  facet_wrap(~level) +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "By Region",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  theme_bw()
+
+```
+
+
+## Data source membership
+
+```{r}
+
+
+monthly_sir_long %>% 
+  filter(strata_var %in% c("data_source_membership")) %>%
+  mutate(
+    level = case_when(
+      level == "GDPPR or HES-APC or SSNAP or ONS Deaths" ~
+        "GDPPR or HES-APC or\nSSNAP or ONS Deaths",
+      TRUE ~ level
+    ) %>%
+      factor() %>% 
+      fct_reorder(value, .desc = FALSE)
+  ) %>% 
+  ggplot(aes(x = stroke_month, y = value, ymin = lowercl, ymax = uppercl, colour = level, fill = level)) +
+  geom_line() + geom_point() +
+  geom_ribbon(alpha = 0.15, size = 0.3, linetype = "dotted") +
+  expand_limits(y = 0) +
+  scale_x_date(
+    breaks = seq(as.Date("2020-01-01"), as.Date("2024-01-01"), by = "6 months"),
+    date_labels = "%b\n%Y",
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(
+    title = "Monthly Age- and Sex-Standardised Stroke Incidence Rates",
+    subtitle = "By Data Source Membership",
+    fill = "Data Source Membership",
+    colour = "Data Source Membership",
+    y = "Standardised incidence rate (events per 100,000 person-years)",
+    x = "Month of stroke"
+  ) +
+  theme_bw() +
+  guides(color = guide_legend(reverse = TRUE), fill = guide_legend(reverse = TRUE))
+
+```
+
+

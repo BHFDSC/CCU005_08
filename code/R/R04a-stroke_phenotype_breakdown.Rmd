@@ -1,0 +1,368 @@
+---
+title: "R04-stroke_code_breakdown"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(tidyverse)
+library(kableExtra)
+library(finalfit)
+
+dir.create(here::here("outputs", "R04-stroke_phenotype_breakdown"), recursive = TRUE)
+
+source(here::here("R", "R00-functions.R"))
+
+```
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+```
+
+# Prepare
+
+## Compute 'overall' and 'no record in source' categories
+
+```{r}
+
+cohort = cohort %>% 
+  mutate(
+    overall = 1,
+    ssnap_no_record = is.na(ssnap_ischaemic) & is.na(ssnap_haemorrhagic) & is.na(ssnap_missing),
+    hes_apc_no_record = is.na(hes_apc_ischaemic) & is.na(hes_apc_haemorrhagic) & is.na(hes_apc_nos),
+    gdppr_no_record = is.na(gdppr_ischaemic) & is.na(gdppr_haemorrhagic) & is.na(gdppr_nos),
+    deaths_no_record = is.na(deaths_ischaemic) & is.na(deaths_haemorrhagic) & is.na(deaths_nos),
+  )
+
+```
+
+## Code-level dataset
+
+```{r}
+
+
+cohort_long = cohort %>% 
+  select(row_id, person_id, index_stroke_date, stroke_fatality,
+         overall,
+         ssnap_ischaemic, ssnap_haemorrhagic, ssnap_missing, ssnap_no_record,
+         hes_apc_ischaemic, hes_apc_haemorrhagic, hes_apc_nos, hes_apc_no_record,
+         gdppr_ischaemic, gdppr_haemorrhagic, gdppr_nos, gdppr_no_record,
+         deaths_ischaemic, deaths_haemorrhagic, deaths_nos, deaths_no_record,
+         stroke_code_list, stroke_description_list, stroke_source_list, stroke_type_list) %>% 
+  mutate(
+    code = stroke_code_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    description = stroke_description_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    stroke_type = stroke_type_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    source = stroke_source_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+  ) %>% 
+  unnest(code, description, stroke_type, source)
+
+
+
+```
+
+# Phenotype-level attributes
+
+```{r}
+
+## Function
+calculate_pheno_contingecy_tbl = function(df, df_label = "cohort", denom_list, pheno_list){
+  
+  # This function calculates the number (and proportion) of individuals in denom_list with
+  # the phenotypical attribute in pheno_list. 
+  
+  
+  contingecy_tbl = names(denom_list) %>% 
+    map_dfr(
+      .f = function(.denom_var){
+        
+        df_subset = df %>% 
+          filter(!!sym(.denom_var) == 1)
+        
+        df_denom = df_subset %>% 
+          summarise(
+            n_denom = n_distinct(person_id),
+            denominator_var = .denom_var,
+            denominator_label = denom_list[[.denom_var]]
+          )
+        
+        df_numerator = names(pheno_list) %>% 
+          map_dfr(
+            .f = function(.numerator_var){
+              df_subset %>%
+                filter(!!sym(.numerator_var) == 1) %>% 
+                summarise(
+                  n = n_distinct(person_id),
+                  numerator_var = .numerator_var,
+                  numerator_label = pheno_list[[.numerator_var]]
+                )
+            }
+          )
+        
+        df_combined = df_numerator %>% 
+          cross_join(df_denom)
+        
+        return(df_combined)
+      }
+    )
+  
+  tidy_contingecy_tbl = contingecy_tbl %>% 
+    mutate(
+      n = case_when(
+        n >= 10 ~ plyr::round_any(n, 5),
+        TRUE ~ 0
+      ),
+      n_denom = case_when(
+        n_denom >= 10 ~ plyr::round_any(n_denom, 5),
+        TRUE ~ 0
+      ),
+      pct = n / n_denom * 100,
+      n_pct = paste0(n, " (", round_tidy(pct, 1), ")"),
+      
+      denominator_tidy = denominator_label %>% 
+        paste0(., " (n=", n_denom, ")"),
+      
+      numerator_tidy = numerator_label
+    )
+  
+  tidy_contingecy_tbl_wide = tidy_contingecy_tbl %>% 
+    select(numerator_tidy, denominator_tidy, n_pct) %>% 
+    pivot_wider(names_from = denominator_tidy, values_from = n_pct) %>% 
+    rename(attribute = numerator_tidy)
+  
+  return(tidy_contingecy_tbl_wide)
+  
+}
+
+
+
+```
+
+
+
+```{r}
+
+## Phenotype list and labels
+
+pheno_list = c(
+  "ssnap_ischaemic" = "SSNAP: Ischaemic stroke",
+  "ssnap_haemorrhagic" = "SSNAP: Haemorrhagic stroke",
+  "ssnap_missing" = "SSNAP: Missing stroke type",
+  "ssnap_no_record" = "SSNAP: No record",
+  "hes_apc_ischaemic" = "HES-APC: Ischaemic stroke",
+  "hes_apc_haemorrhagic" = "HES-APC: Haemorrhagic stroke",
+  "hes_apc_nos" = "HES-APC: NOS stroke",
+  "hes_apc_no_record" = "HES-APC: No stroke record",
+  "gdppr_ischaemic" = "GDPPR: Ischaemic stroke",
+  "gdppr_haemorrhagic" = "GDPPR: Haemorrhagic stroke",
+  "gdppr_nos" = "GDPPR: NOS stroke",
+  "gdppr_no_record" = "GDPPR: No stroke record",
+  "deaths_ischaemic" = "ONS Deaths: Ischaemic stroke",
+  "deaths_haemorrhagic" = "ONS Deaths: Haemorrhagic stroke",
+  "deaths_nos" = "ONS Deaths: NOS stroke",
+  "deaths_no_record" = "ONS Deaths: No stroke record"
+)
+
+```
+
+## All strokes
+
+```{r}
+
+contigency_tbl_pheno_cohort = calculate_pheno_contingecy_tbl(
+  df = cohort,
+  denom_list = append(pheno_list, list("overall" = "All strokes")),
+  pheno_list = pheno_list
+)
+
+write_csv(
+  contigency_tbl_pheno_cohort,
+  file = here::here(
+    "outputs", "R04-stroke_phenotype_breakdown", "contigency_tbl_pheno_cohort.csv"
+  )
+)
+
+contigency_tbl_pheno_cohort %>% 
+  mykable()
+
+```
+
+
+## Non-fatal strokes
+
+```{r}
+
+contigency_tbl_pheno_non_fatal = calculate_pheno_contingecy_tbl(
+  df = cohort %>% filter(stroke_fatality == "Non-fatal"),
+  denom_list = append(pheno_list, list("overall" = "All non-fatal strokes")),
+  pheno_list = pheno_list
+)
+
+write_csv(
+  contigency_tbl_pheno_non_fatal,
+  file = here::here(
+    "outputs", "R04-stroke_phenotype_breakdown", "contigency_tbl_pheno_non_fatal.csv"
+  )
+)
+
+contigency_tbl_pheno_non_fatal %>% 
+  mykable()
+
+```
+
+## Fatal strokes
+
+```{r}
+
+contigency_tbl_pheno_fatal = calculate_pheno_contingecy_tbl(
+  df = cohort %>% filter(stroke_fatality == "Fatal"),
+  denom_list = append(pheno_list, list("overall" = "All fatal strokes")),
+  pheno_list = pheno_list
+)
+
+write_csv(
+  contigency_tbl_pheno_fatal,
+  file = here::here(
+    "outputs", "R04-stroke_phenotype_breakdown", "contigency_tbl_pheno_fatal.csv"
+  )
+)
+
+contigency_tbl_pheno_fatal %>% 
+  mykable()
+
+```
+
+# Code-level attributes
+
+```{r}
+
+## Function
+calculate_code_contingecy_tbl = function(df_long, denom_list){
+  
+  # This function calculates the number (and proportion) of individuals in denom_list with
+  # the code level attributes. 
+  
+  
+  contingecy_tbl = names(denom_list) %>% 
+    map_dfr(
+      .f = function(.denom_var){
+        
+        df_subset = df_long %>% 
+          filter(!!sym(.denom_var) == 1)
+        
+        df_denom = df_subset %>% 
+          summarise(
+            n_denom = n_distinct(person_id),
+            denominator_var = .denom_var,
+            denominator_label = denom_list[[.denom_var]]
+          )
+        
+        df_numerator = df_subset %>% 
+          group_by(source, stroke_type, code, description) %>% 
+          summarise(
+            n = n_distinct(person_id)
+          ) %>% 
+          ungroup()
+        
+        df_combined = df_numerator %>% 
+          cross_join(df_denom)
+        
+        return(df_combined)
+      }
+    )
+  
+  tidy_contingecy_tbl = contingecy_tbl %>% 
+    mutate(
+      n = case_when(
+        n >= 10 ~ plyr::round_any(n, 5),
+        TRUE ~ 0
+      ),
+      n_denom = case_when(
+        n_denom >= 10 ~ plyr::round_any(n_denom, 5),
+        TRUE ~ 0
+      ),
+      pct = n / n_denom * 100,
+      n_pct = paste0(n, " (", round_tidy(pct, 1), ")"),
+      
+      
+      denominator_tidy = denominator_label %>% 
+        paste0(., " (n=", n_denom, ")") %>% 
+        factor() %>% 
+        fct_inorder(),
+      
+  
+      
+      source = source %>%
+        fct_recode(
+          "GDPPR" = "gdppr",
+          "HES-APC" = "hes_apc",
+          "SSNAP" = "ssnap",
+          "ONS Deaths" = "deaths"
+        ) %>% 
+        fct_relevel("SSNAP", "HES-APC", "GDPPR", "ONS Deaths"),
+      
+      stroke_type = stroke_type %>%
+        fct_recode(
+          "Ischaemic" = "ischaemic",
+          "Haemorrhagic" = "haemorrhagic",
+          "Not otherwise specified" = "nos",
+          "Missing stroke type" = "missing"
+        ) %>% 
+        fct_relevel("Ischaemic", "Haemorrhagic", "Not otherwise specified", "Missing stroke type"),
+      
+    ) %>% 
+    arrange(denominator_tidy, source, stroke_type, desc(n), code, description)
+  
+
+  tidy_contingecy_tbl_wide = tidy_contingecy_tbl %>%
+    select(source, stroke_type, code, description, denominator_tidy, n_pct) %>%
+    pivot_wider(names_from = denominator_tidy, values_from = n_pct) %>% 
+    mutate(across(-c(source, stroke_type, code, description), ~ ifelse(is.na(.), "0 (0.0)", .))) %>% 
+    arrange(source, stroke_type)
+
+  return(tidy_contingecy_tbl_wide)
+
+}
+
+
+```
+
+## All strokes 
+
+```{r}
+
+contigency_tbl_code_cohort = calculate_code_contingecy_tbl(
+  df = cohort_long,
+  denom_list = append(pheno_list, list("overall" = "All strokes"))
+)
+
+write_csv(
+  contigency_tbl_code_cohort,
+  file = here::here(
+    "outputs", "R04-stroke_phenotype_breakdown", "contigency_tbl_code_cohort.csv"
+  )
+)
+
+contigency_tbl_code_cohort %>% 
+  mykable()
+
+
+```
+
+

@@ -1,0 +1,151 @@
+---
+title: "R07-date_agreement"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(tidyverse)
+library(kableExtra)
+library(rstatix)
+
+source(here::here("R", "R00-functions.R"))
+
+```
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+cohort_long = cohort %>% 
+  select(row_id, person_id, index_stroke_date, stroke_fatality,
+         stroke_date_list, stroke_code_list, stroke_description_list,
+         stroke_source_list, stroke_type_list) %>% 
+  mutate(
+    date = stroke_date_list %>% 
+      str_extract_all('(?<=\\[|,)[^,]+(?=,|\\])'),
+    source = stroke_source_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+  ) %>% 
+  unnest(date, source) %>%
+  mutate(date = ymd(date)) %>% 
+  group_by(person_id, source) %>%
+  summarise(date = min(date)) %>% 
+  ungroup()
+
+cohort_date_wide = cohort_long %>%
+  ungroup() %>% 
+  filter(source != "deaths") %>% 
+  pivot_wider(names_from = "source", values_from = "date") %>% 
+  mutate(
+    gdppr_hes_apc = as.numeric(gdppr - hes_apc),
+    gdppr_ssnap = as.numeric(gdppr - ssnap),
+    ssnap_hes_apc = as.numeric(ssnap - hes_apc),
+  )
+
+cohort_date_long = cohort_date_wide %>% 
+  select(person_id, gdppr_hes_apc, gdppr_ssnap, ssnap_hes_apc) %>% 
+  pivot_longer(
+    cols = c(gdppr_hes_apc, gdppr_ssnap, ssnap_hes_apc),
+    names_to = "comparison",
+    values_to = "date_diff"
+  ) %>% 
+  filter(!is.na(date_diff))
+
+```
+
+
+# Density plot
+
+```{r}
+
+
+cohort_date_long %>%
+  mutate(
+    comparison = comparison %>%
+      toupper() %>% 
+      str_replace("_", " - ") %>% 
+      str_replace_all("_", "-") 
+  ) %>% 
+  ggplot(aes(date_diff, fill = comparison, colour = comparison)) +
+  geom_density(alpha = 0.2, adjust = 4) +
+  theme_bw() +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_x_continuous(
+    breaks = seq(-30, 30, by = 5)
+  ) + 
+  labs(
+    x = "Difference in days",
+    y = "Density",
+    title = "Difference in Earliest Recorded Stroke Date Between Data Sources",
+    fill = "Comparison",
+    colour = "Comparison"
+  ) +
+  theme(
+    legend.position = c(0.95, 0.95), # x and y coordinates (0,0 = bottom-left, 1,1 = top-right)
+    legend.justification = c("right", "top") # Align the legend by its right and top edges
+  )
+
+```
+
+
+# Summary
+
+```{r}
+
+var_list = list("gdppr_hes_apc", "gdppr_ssnap", "ssnap_hes_apc")
+
+var_list %>% 
+  map_dfr(
+    function(var){
+      cohort_date_wide %>%
+        get_summary_stats(
+          (!!var) , type = c("full"),
+          show = c("n", "mean", "sd", "median", "iqr", "q1", "q3", "se", "ci")
+        )
+    }
+  ) %>%
+  mutate(
+    variable = variable %>%
+      toupper() %>% 
+      str_replace("_", " - ") %>% 
+      str_replace_all("_", "-") ,
+    n = n %>% plyr::round_any(5)
+  ) %>% 
+  rename(Comparison = variable) %>% 
+  mykable()
+
+```
+
+
+# Wilcoxon Signed-Rank Test
+
+```{r}
+
+
+cohort_date_long %>% 
+  group_by(comparison) %>%
+  wilcox_test(date_diff ~ 1, mu = 0) %>% 
+  ungroup() %>%
+  mutate(
+    comparison = comparison %>%
+      toupper() %>% 
+      str_replace("_", " - ") %>% 
+      str_replace_all("_", "-"),
+    n = n %>% plyr::round_any(5)
+  ) %>% 
+  mykable()
+
+```
+

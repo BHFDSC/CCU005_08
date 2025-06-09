@@ -1,0 +1,714 @@
+---
+title: "R11-medications_results"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width=9, fig.height=5.5)
+
+dir.create(here::here("outputs", "R11-medications_results"), recursive = TRUE)
+
+source(here::here("R", "R00-functions.R"))
+
+library(tidyverse)
+library(finalfit)
+library(broom)
+library(broom.helpers)
+library(patchwork)
+
+```
+
+# Load results
+
+```{r}
+
+cohorts = read_rds(here::here("data", "R10-medications_compute", "cohorts.rds"))
+csc_models = read_rds(here::here("data", "R10-medications_compute", "csc_models.rds"))
+unadj_cuminc = read_rds(here::here("data", "R10-medications_compute", "unadj_cuminc.rds"))
+adj_cuminc = read_rds(here::here("data", "R10-medications_compute", "adj_cuminc.rds"))
+
+```
+
+
+# Regression models
+
+```{r}
+
+
+tbl_med_coxph_hr = map2_dfr(cohorts, csc_models, .f = function(.cohort, .csc_model){
+  
+  .stroke_type = .cohort$stroke_type
+  .medication = .cohort$medication
+  
+  tidy_coeff = .csc_model$models$`Cause 1` %>% 
+    tidy_and_attach(conf.int = TRUE, exponentiate = TRUE) %>%
+    tidy_add_reference_rows() %>% 
+    tidy_add_variable_labels() %>%
+    tidy_add_term_labels() %>% 
+    mutate(
+      stroke_type = .stroke_type,
+      medication = .medication
+    )
+  
+  return(tidy_coeff)
+  
+})
+
+
+write_csv(
+  x = tbl_med_coxph_hr,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_coxph_hr.csv")
+)
+  
+
+```
+
+## Tidy
+
+```{r}
+
+tbl_med_coxph_hr_tidy = tbl_med_coxph_hr %>% 
+  mutate(
+    
+    row_id = row_number(),
+    
+    hr_tidy = case_when(
+      is.na(estimate) ~ "(Ref.)",
+      TRUE ~ paste0(
+        round_tidy(estimate, 2), " ([", round_tidy(conf.low, 2), ", ", round_tidy(conf.high, 2), "], ",
+        p_tidy(p.value, digits = 3), ")"
+      )
+    ),
+    
+    stroke_type = stroke_type %>% 
+      factor() %>% 
+      fct_recode(
+        "All stroke types" = "all_stroke_types",
+        "Ischaemic or unknown" = "ischaemic_or_unknown",
+        "Haemorrhagic" = "haemorrhagic"
+      ) %>% 
+      fct_relevel("All stroke types", "Ischaemic or unknown", "Haemorrhagic"),
+    
+    medication = medication %>% 
+      factor() %>% 
+      fct_recode(
+        "Anticoagulants or Antiplatelets" = "anticoag_or_antiplat",
+        "Anticoagulants" = "anticoagulants",
+        "Antihypertensives" = "antihypertensives",
+        "Antiplatelets" = "antiplatelets",
+        "Lipid lower drugs" = "lipid_lowering_drug"
+      ) %>% 
+      fct_relevel(
+        "Anticoagulants or Antiplatelets", "Anticoagulants",
+        "Antiplatelets", "Antihypertensives", "Lipid lower drugs"
+      )
+  ) %>% 
+  arrange(stroke_type, medication, row_id) %>% 
+  select(stroke_type, medication, var_label, label, hr_tidy) %>% 
+  pivot_wider(names_from = medication, values_from = hr_tidy)
+
+write_csv(
+  x = tbl_med_coxph_hr_tidy,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_coxph_hr_tidy.csv")
+)
+
+
+```
+
+## Hazard ratios
+
+### All stroke types
+
+```{r}
+
+tbl_med_coxph_hr_tidy %>%
+  filter(stroke_type == "All stroke types") %>% 
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+### Ischaemic or unknown stroke types
+
+```{r}
+
+tbl_med_coxph_hr_tidy %>%
+  filter(stroke_type == "Ischaemic or unknown") %>% 
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+
+### Haemorrhagic strokes
+
+```{r}
+
+tbl_med_coxph_hr_tidy %>%
+  filter(stroke_type == "Haemorrhagic") %>% 
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+
+## Model fit
+
+```{r}
+
+tbl_med_coxph_model_fit = map2_dfr(cohorts, csc_models, .f = function(.cohort, .csc_model){
+  
+  .stroke_type = .cohort$stroke_type
+  .medication = .cohort$medication
+  
+  model_fit = .csc_model$models$`Cause 1` %>% 
+    broom::glance() %>% 
+    mutate(
+      stroke_type = .stroke_type,
+      medication = .medication
+    )
+  
+  return(model_fit)
+  
+})
+
+
+write_csv(
+  x = tbl_med_coxph_model_fit,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_coxph_model_fit.csv")
+)
+
+```
+
+
+
+```{r}
+
+tbl_med_coxph_model_fit_tidy = tbl_med_coxph_model_fit %>% 
+  select(stroke_type, medication, nobs, nevent, r.squared, logLik, AIC, BIC) %>% 
+  mutate(
+    
+    nobs = case_when(
+      nobs < 10 ~ 0,
+      TRUE ~ nobs %>% plyr::round_any(5)
+    ),
+    
+    nevent = case_when(
+      nevent < 10 ~ 0,
+      TRUE ~ nevent %>% plyr::round_any(5)
+    ),
+    
+    stroke_type = stroke_type %>% 
+      factor() %>% 
+      fct_recode(
+        "All stroke types" = "all_stroke_types",
+        "Ischaemic or unknown" = "ischaemic_or_unknown",
+        "Haemorrhagic" = "haemorrhagic"
+      ) %>% 
+      fct_relevel("All stroke types", "Ischaemic or unknown", "Haemorrhagic"),
+    
+    medication = medication %>% 
+      factor() %>% 
+      fct_recode(
+        "Anticoagulants or Antiplatelets" = "anticoag_or_antiplat",
+        "Anticoagulants" = "anticoagulants",
+        "Antihypertensives" = "antihypertensives",
+        "Antiplatelets" = "antiplatelets",
+        "Lipid lower drugs" = "lipid_lowering_drug"
+      ) %>% 
+      fct_relevel(
+        "Anticoagulants or Antiplatelets", "Anticoagulants",
+        "Antiplatelets", "Antihypertensives", "Lipid lower drugs"
+      )
+    
+  )
+
+
+write_csv(
+  x = tbl_med_coxph_model_fit_tidy,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_coxph_model_fit_tidy.csv")
+)
+
+tbl_med_coxph_model_fit_tidy %>%
+  mykable()
+
+
+```
+
+
+
+# Unadjusted cumulative incidence
+
+```{r}
+
+time_points = 365
+
+tbl_med_unadj_cuminc = unadj_cuminc %>% 
+  map_dfr(.f = function(.unadj_cuminc){
+    
+    .stroke_type = .unadj_cuminc$stroke_type
+    .medication = .unadj_cuminc$medication
+    
+    
+    tbl_cuminc = .unadj_cuminc$cuminc %>% 
+      tidycmprsk::tbl_cuminc(
+        times = time_points,
+        outcomes = c("Dispensed"),
+        label_header = "**{time} days**",
+        estimate_fun = ~gtsummary::style_sigfig(.x, scale = 100, digits = 5)
+      )
+    
+    
+    tbl_cuminc_tidy = tbl_cuminc$table_body %>% 
+      mutate(
+        
+        cuminc_estimate = stat_1 %>% 
+          str_extract("^[\\d\\.]+") %>% 
+          as.numeric() / 100,
+        
+        cuminc_lower = stat_1 %>% 
+          str_extract("(?<=\\()[\\d\\.]+(?=%,)") %>% 
+          as.numeric() / 100,
+        
+        cuminc_upper = stat_1 %>% 
+          str_extract("(?<=, )[\\d\\.]+(?=%\\))") %>% 
+          as.numeric() / 100,
+        
+        stroke_type = .stroke_type,
+        medication = .medication,
+        
+      ) %>% 
+      select(
+        stroke_type, medication, variable, var_label, label,
+        cuminc_estimate, cuminc_lower, cuminc_upper, n, n.event
+      )
+    
+    return(tbl_cuminc_tidy)
+    
+  })
+
+
+
+
+tbl_med_unadj_cuminc = tbl_med_unadj_cuminc %>% 
+  mutate(
+    
+    n = case_when(
+      n < 10 ~ 0,
+      TRUE ~ n %>% plyr::round_any(5)
+    ),
+    
+    n.event = case_when(
+      n.event < 10 ~ 0,
+      TRUE ~ n.event %>% plyr::round_any(5)
+    ),
+    
+    stroke_type = stroke_type %>% 
+      factor() %>% 
+      fct_recode(
+        "All stroke types" = "all_stroke_types",
+        "Ischaemic or unknown" = "ischaemic_or_unknown",
+        "Haemorrhagic" = "haemorrhagic"
+      ) %>% 
+      fct_relevel("All stroke types", "Ischaemic or unknown", "Haemorrhagic"),
+    
+    medication = medication %>% 
+      factor() %>% 
+      fct_recode(
+        "Anticoagulants or Antiplatelets" = "anticoag_or_antiplat",
+        "Anticoagulants" = "anticoagulants",
+        "Antihypertensives" = "antihypertensives",
+        "Antiplatelets" = "antiplatelets",
+        "Lipid lower drugs" = "lipid_lowering_drug"
+      ) %>% 
+      fct_relevel(
+        "Anticoagulants or Antiplatelets", "Anticoagulants",
+        "Antiplatelets", "Antihypertensives", "Lipid lower drugs"
+      )
+  ) %>% 
+  filter(!is.na(cuminc_estimate))
+
+
+
+```
+
+
+```{r}
+
+tbl_med_unadj_cuminc_tidy = tbl_med_unadj_cuminc %>% 
+  mutate(
+    cum_inc_tidy = paste0(
+      round_tidy(cuminc_estimate*100, 1), " (",
+      round_tidy(cuminc_lower*100, 1), ", ",
+      round_tidy(cuminc_upper*100, 1), ")"
+    )
+  ) %>% 
+  select(stroke_type, medication, var_label, label, n, cum_inc_tidy) %>% 
+  pivot_wider(
+    names_from = medication,
+    values_from = cum_inc_tidy
+  )
+
+
+write_csv(
+  x = tbl_med_unadj_cuminc_tidy,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_unadj_cuminc_tidy.csv")
+)
+
+
+
+```
+
+
+## All stroke types
+
+```{r}
+
+tbl_med_unadj_cuminc_tidy %>%
+  filter(stroke_type == "All stroke types") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+## Ischaemic or unknown stroke type
+
+```{r}
+
+tbl_med_unadj_cuminc_tidy %>%
+  filter(stroke_type == "Ischaemic or unknown") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+## Haemorrhagic strokes
+
+```{r}
+
+tbl_med_unadj_cuminc_tidy %>%
+  filter(stroke_type == "Haemorrhagic") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+
+# Adjusted cumulative incidence
+
+
+```{r}
+
+
+var_labels = extract_variable_label(cohorts[[1]]$cohort)
+
+tbl_med_adj_cuminc = adj_cuminc %>% 
+  map_dfr(.f = function(.adj_cuminc){
+    
+    .variable = .adj_cuminc$variable
+    .stroke_type = .adj_cuminc$stroke_type
+    .medication = .adj_cuminc$medication
+    
+    tbl_adj_cumin = .adj_cuminc$ate_object$meanRisk %>% 
+      filter(time == time_points) %>% 
+      mutate(
+        variable = .variable,
+        var_label = var_labels[.variable],
+        stroke_type = .stroke_type,
+        medication = .medication
+      ) %>% 
+      select(
+        stroke_type, medication, variable, var_label, label = treatment,
+        cuminc_estimate = estimate, cuminc_lower = lower, cuminc_upper = upper
+      ) 
+    
+  })
+
+
+tbl_med_adj_cuminc = tbl_med_adj_cuminc %>% 
+  mutate(
+    stroke_type = stroke_type %>% 
+      factor() %>% 
+      fct_recode(
+        "All stroke types" = "all_stroke_types",
+        "Ischaemic or unknown" = "ischaemic_or_unknown",
+        "Haemorrhagic" = "haemorrhagic"
+      ) %>% 
+      fct_relevel("All stroke types", "Ischaemic or unknown", "Haemorrhagic"),
+    
+    medication = medication %>% 
+      factor() %>% 
+      fct_recode(
+        "Anticoagulants or Antiplatelets" = "anticoag_or_antiplat",
+        "Anticoagulants" = "anticoagulants",
+        "Antihypertensives" = "antihypertensives",
+        "Antiplatelets" = "antiplatelets",
+        "Lipid lower drugs" = "lipid_lowering_drug"
+      ) %>% 
+      fct_relevel(
+        "Anticoagulants or Antiplatelets", "Anticoagulants",
+        "Antiplatelets", "Antihypertensives", "Lipid lower drugs"
+      )
+  )
+
+write_csv(
+  x = tbl_med_adj_cuminc,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_adj_cuminc.csv")
+)
+
+
+```
+
+
+```{r}
+
+tbl_med_adj_cuminc_tidy = tbl_med_adj_cuminc %>% 
+  mutate(
+    cum_inc_tidy = paste0(
+      round_tidy(cuminc_estimate*100, 1), " (",
+      round_tidy(cuminc_lower*100, 1), ", ",
+      round_tidy(cuminc_upper*100, 1), ")"
+    )
+  ) %>% 
+  select(stroke_type, medication, var_label, label, cum_inc_tidy) %>% 
+  pivot_wider(
+    names_from = medication,
+    values_from = cum_inc_tidy
+  )
+
+
+write_csv(
+  x = tbl_med_adj_cuminc_tidy,
+  file = here::here("outputs", "R11-medications_results", "tbl_med_adj_cuminc_tidy.csv")
+)
+
+
+```
+
+## All stroke types
+
+```{r}
+
+tbl_med_adj_cuminc_tidy %>%
+  filter(stroke_type == "All stroke types") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+## Ischaemic or unknown stroke type
+
+```{r}
+
+tbl_med_adj_cuminc_tidy %>%
+  filter(stroke_type == "Ischaemic or unknown") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+## Haemorrhagic strokes
+
+```{r}
+
+tbl_med_adj_cuminc_tidy %>%
+  filter(stroke_type == "Haemorrhagic") %>%
+  select(-stroke_type) %>% 
+  mykable()
+
+```
+
+
+
+# Combined plots
+
+```{r}
+
+
+tbl_cuminc_combined = tbl_med_unadj_cuminc %>% 
+  mutate(adjustment = "Unadjusted") %>% 
+  select(-c(n, n.event)) %>% 
+  bind_rows(
+    tbl_med_adj_cuminc %>% 
+      mutate(adjustment = "Adjusted")
+  ) %>% 
+  mutate(
+    term = paste0(variable, label) %>% 
+      factor() %>% 
+      fct_inorder(),
+    adjustment = adjustment %>% 
+      factor() %>% 
+      fct_relevel("Unadjusted", "Adjusted")
+  )
+
+```
+
+
+
+```{r}
+
+
+tbl_med_plot_var_labels = tbl_cuminc_combined %>% 
+  distinct(term, variable, var_label, label) %>% 
+  group_by(variable) %>% 
+  mutate(var_label_plot = if_else(row_number() == 1, var_label, "")) %>% 
+  ungroup()
+
+
+fig_var_labels = tbl_med_plot_var_labels %>% 
+  ggplot(aes(y = fct_rev(term))) + 
+  geom_text(aes(x = 0, label = var_label_plot), size = 3.25, hjust = 0, vjust = 0.5, fontface = "bold") +
+  geom_text(aes(x = 1, label = ""), hjust = 0, fontface = "bold") + 
+  labs(x = "", y = "") +
+  theme_void() +
+  theme(
+    plot.margin = margin(5, 5, 5, 5),
+    panel.grid.major =  element_blank()
+  )
+
+
+
+```
+
+## All stroke types
+
+```{r fig.height=7, fig.width=12}
+
+fig_med_cumin_all_strokes = tbl_cuminc_combined %>% 
+  filter(stroke_type == "All stroke types")  %>%
+  mutate(
+    medication = medication %>%
+      fct_recode("Anticoagulants or\nAntiplatelets" = "Anticoagulants or Antiplatelets")
+  ) %>% 
+  ggplot(
+    aes(
+      x = cuminc_estimate*100, y = fct_rev(term), colour = adjustment,
+      xmin = cuminc_lower*100, xmax = cuminc_upper*100
+    )
+  ) +
+  labs(y = NULL, x = "Cumulative incidence (%)", colour = NULL) +
+  geom_point(size = 1, position = position_dodge(width = 0.7)) + 
+  geom_linerange(position = position_dodge(width = 0.7)) +
+  facet_wrap(~medication, nrow = 1) +
+  scale_y_discrete(labels = rev(tbl_med_plot_var_labels$label)) +
+  scale_x_continuous(breaks = seq(0, 100, 20)) +
+  scale_colour_brewer(palette = "Dark2") +
+  expand_limits(x = c(0, 100)) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+fig_med_combined_cuminc_all_strokes = (fig_var_labels | fig_med_cumin_all_strokes) +
+  plot_layout(widths = c(1.5, 5)) +
+  plot_annotation(title = "1-year Cumulative Incidence of Medications Dispensed: All stroke types") +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggsave(
+  here::here("outputs", "R11-medications_results", "fig_med_combined_cuminc_all_strokes.png"),
+  plot = fig_med_combined_cuminc_all_strokes,
+  height = 7,
+  width = 12,
+  dpi = 300
+)
+
+fig_med_combined_cuminc_all_strokes
+
+```
+
+## Ischaemic or unknown stroke types
+
+```{r fig.height=7, fig.width=12}
+
+fig_med_cumin_ischaemic_or_unknown = tbl_cuminc_combined %>% 
+  filter(stroke_type == "Ischaemic or unknown")  %>%
+  mutate(
+    medication = medication %>%
+      fct_recode("Anticoagulants or\nAntiplatelets" = "Anticoagulants or Antiplatelets")
+  ) %>% 
+  ggplot(
+    aes(
+      x = cuminc_estimate*100, y = fct_rev(term), colour = adjustment,
+      xmin = cuminc_lower*100, xmax = cuminc_upper*100
+    )
+  ) +
+  labs(y = NULL, x = "Cumulative incidence (%)", colour = NULL) +
+  geom_point(size = 1, position = position_dodge(width = 0.7)) + 
+  geom_linerange(position = position_dodge(width = 0.7)) +
+  facet_wrap(~medication, nrow = 1) +
+  scale_y_discrete(labels = rev(tbl_med_plot_var_labels$label)) +
+  scale_x_continuous(breaks = seq(0, 100, 20)) +
+  scale_colour_brewer(palette = "Dark2") +
+  expand_limits(x = c(0, 100)) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+fig_med_combined_cuminc_ischaemic_or_unknown = (fig_var_labels | fig_med_cumin_ischaemic_or_unknown) +
+  plot_layout(widths = c(1.5, 5)) +
+  plot_annotation(
+    title = "1-year Cumulative Incidence of Medications Dispensed: Ischaemic or unknown stroke types"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggsave(
+  here::here("outputs", "R11-medications_results", "fig_med_combined_cuminc_ischaemic_or_unknown.png"),
+  plot = fig_med_combined_cuminc_ischaemic_or_unknown,
+  height = 7,
+  width = 12,
+  dpi = 300
+)
+
+fig_med_combined_cuminc_ischaemic_or_unknown
+
+```
+
+## Haemorrhagic stroke type
+
+```{r fig.height=7, fig.width=12}
+
+fig_med_cumin_haemorrhagic = tbl_cuminc_combined %>% 
+  filter(stroke_type == "Haemorrhagic")  %>%
+  mutate(
+    medication = medication %>%
+      fct_recode("Anticoagulants or\nAntiplatelets" = "Anticoagulants or Antiplatelets")
+  ) %>% 
+  ggplot(
+    aes(
+      x = cuminc_estimate*100, y = fct_rev(term), colour = adjustment,
+      xmin = cuminc_lower*100, xmax = cuminc_upper*100
+    )
+  ) +
+  labs(y = NULL, x = "Cumulative incidence (%)", colour = NULL) +
+  geom_point(size = 1, position = position_dodge(width = 0.7)) + 
+  geom_linerange(position = position_dodge(width = 0.7)) +
+  facet_wrap(~medication, nrow = 1) +
+  scale_y_discrete(labels = rev(tbl_med_plot_var_labels$label)) +
+  scale_x_continuous(breaks = seq(0, 100, 20)) +
+  scale_colour_brewer(palette = "Dark2") +
+  expand_limits(x = c(0, 100)) +
+  theme_bw() +
+  theme(legend.position = "right")
+
+fig_med_combined_cuminc_haemorrhagic = (fig_var_labels | fig_med_cumin_haemorrhagic) +
+  plot_layout(widths = c(1.5, 5)) +
+  plot_annotation(
+    title = "1-year Cumulative Incidence of Medications Dispensed: Haemorrhagic strokes"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 16))
+
+ggsave(
+  here::here("outputs", "R11-medications_results", "fig_med_combined_cuminc_haemorrhagic.png"),
+  plot = fig_med_combined_cuminc_haemorrhagic,
+  height = 7,
+  width = 12,
+  dpi = 300
+)
+
+fig_med_combined_cuminc_haemorrhagic
+
+```

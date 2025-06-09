@@ -1,0 +1,335 @@
+---
+title: "R10-medications_compute"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width=9, fig.height=5.5) 
+
+dir.create(here::here("data", "R10-medications_compute"), recursive = TRUE)
+
+
+source(here::here("R", "R00-functions.R"))
+
+library(tidyverse)
+library(lubridate)
+library(finalfit)
+library(tidycmprsk)
+library(riskRegression)
+library(adjustedCurves)
+library(future)
+library(furrr)
+
+```
+
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+```
+
+
+# Prepare dataset
+
+
+
+Start follow-up maximum of:
+
+- GDPPR date +28 days;
+- SSNAP/HES-APC discharge date +28 days
+
+
+Inclusion criteria:
+
+- Known follow-up start date i.e. known discharge date if hospitalised
+- Alive on follow-up start date
+- Follow-up start date <= study end date
+
+
+Analysis:
+
+- Cumulative incidence of medication dispensed and death (as competing event)
+
+
+```{r}
+
+# Follow-up start and study end date
+cohort_medications = cohort %>% 
+  mutate(
+    follow_up_start = case_when(
+      (stroke_ssnap == 1) | (stroke_hes_apc == 1) ~ discharge_date + days(28),
+      .default = index_stroke_date + days(28)
+    ),
+    study_end_date = ymd("2024-05-31")
+  )
+
+# New medicaton category: Anticoagulatns OR antiplatelets
+cohort_medications = cohort_medications %>% 
+  mutate(
+    ps_anticoag_or_antiplat_date = pmin(ps_anticoagulants_date, ps_antiplatelets_date, na.rm = TRUE)
+  )
+
+# Filter cohort
+cohort_medications = cohort_medications %>% 
+  filter(
+    # Non-fatal stroke
+    (stroke_fatality == "Non-fatal")
+    
+    # known follow-up start date i.e. discharge date known if hospitalised
+    & (!is.na(follow_up_start))        
+    
+    # Alive on follow-up start 
+    & (is.na(date_of_death) | (date_of_death > follow_up_start)) 
+    
+    # Follow-up start not before study end date
+    & (follow_up_start <= study_end_date) 
+  )
+
+
+```
+
+
+```{r}
+
+follow_up_days = 365
+
+stroke_types = c(
+  "all_stroke_types",
+  "ischaemic_or_unknown",
+  "haemorrhagic"
+)
+
+medications = c(
+  "anticoag_or_antiplat" ,
+  "anticoagulants",
+  "antiplatelets",
+  "antihypertensives",
+  "lipid_lowering_drug"
+)
+
+covariate_vars = c(
+  "year_of_stroke",
+  "age_group", "sex", "imd_19_quintile", "ethnicity", "region", "cci_fct",
+  "data_source_combination_ex_deaths",
+  "atrial_fibrillation",
+  "prior_anticoagulants_flag", "prior_antiplatelets_flag",
+  "prior_antihypertensives_flag", "prior_lipid_lowering_drug_flag"
+)
+
+
+time_points = c(90, 180, 365)
+
+```
+
+
+
+## List of cohorts medication and stroke type combination 
+
+```{r}
+
+
+cohorts = map2(
+  rep(stroke_types, each = length(medications)),
+  rep(medications, times = length(stroke_types)),
+  
+  .f = function(.stroke_type, .medication){
+    
+    .cohort = cohort_medications
+    
+    if(.stroke_type == "ischaemic_or_unknown"){
+      
+      .cohort = .cohort %>% 
+        filter(stroke_type_harmonised %in% c("Ischaemic", "Unknown"))
+      
+    } else if (.stroke_type == "haemorrhagic"){
+      
+      .cohort = .cohort %>% 
+        filter(stroke_type_harmonised %in% c("Haemorrhagic"))
+    
+    }
+    
+    
+    .cohort = .cohort %>% 
+      transmute(
+        person_id, follow_up_start,
+        date_of_death, study_end_date,
+        medication_date = !!sym(paste0("ps_", .medication, "_date")),
+        
+        year_of_stroke,
+        age_group, sex, imd_19_quintile, ethnicity, region, cci_fct,
+        data_source_combination_ex_deaths,
+        
+        prior_anticoagulants_flag, prior_antiplatelets_flag,
+        prior_antihypertensives_flag, prior_lipid_lowering_drug_flag,
+        
+        atrial_fibrillation
+        
+      ) %>% 
+      mutate(
+        
+        outcome_date = pmin(
+          medication_date,
+          date_of_death,
+          follow_up_start + days(follow_up_days),
+          study_end_date,
+          na.rm = TRUE
+        ),
+        
+        outcome_status = case_when(
+          medication_date == outcome_date ~ "Dispensed",
+          date_of_death == outcome_date ~ "Death",
+          .default = "Censored"
+        ) %>% 
+        factor() %>% 
+        fct_relevel("Censored", "Dispensed", "Death"),
+        
+        outcome_status_num = outcome_status %>% 
+          as.integer() - 1,
+        
+        days_to_event = (outcome_date - follow_up_start) %>% 
+          as.numeric(),
+        
+      )
+    
+    .out = list(
+      cohort = .cohort,
+      stroke_type = .stroke_type,
+      medication = .medication
+    )
+    
+    return(.out)
+    
+    
+  }
+
+)
+
+write_rds(cohorts, here::here("data", "R10-medications_compute", "cohorts.rds"))
+
+
+```
+
+# Unadjusted cumulative incidence
+
+```{r}
+
+unadj_cuminc = cohorts %>% 
+  map(.f = function(.cohort){
+    
+    
+    cuminc_list = c("1", covariate_vars) %>% 
+      map(.f = function(.var){
+        
+        # Formula
+        surv_formula = as.formula(paste0("Surv(days_to_event, outcome_status) ~ ", .var))
+        
+        # Cuminc
+        cuminc_output = tidycmprsk::cuminc(surv_formula, data = .cohort$cohort)
+        
+        list(
+          cuminc = cuminc_output,
+          strata = .var,
+          stroke_type = .cohort$stroke_type,
+          medication = .cohort$medication
+        )
+      })
+  })
+
+
+unadj_cuminc = unlist(unadj_cuminc, recursive = FALSE)
+
+write_rds(unadj_cuminc, here::here("data", "R10-medications_compute", "unadj_cuminc.rds"))
+
+
+```
+
+
+# Cause-specific Cox Proportional Hazard Regression
+
+```{r}
+
+csc_models = cohorts %>% 
+  map(
+    .f = function(.cohort){
+      
+      csc_model = CSC(
+        formula = as.formula(
+          paste0(
+            "Hist(days_to_event, outcome_status_num) ~ ",
+            paste0(covariate_vars, collapse = " + ")
+          )
+        ),
+        data = .cohort$cohort,
+        cause = 1,
+        surv.type = "hazard",
+        fitter = "coxph"
+      )
+      
+      return(csc_model)
+    }
+  )
+
+write_rds(csc_models, here::here("data", "R10-medications_compute", "csc_models.rds"))
+
+```
+
+# Adjusted cumulative incidence
+
+```{r}
+
+plan(multisession, workers = 15) 
+
+adj_cuminc = future_map2(
+  cohorts, csc_models,
+  .f = function(.cohorts, .csc_model){
+    
+    .cohort = .cohorts$cohort
+    .stroke_type = .cohorts$stroke_type
+    .medication = .cohorts$medication
+    
+    adj_cum_inc = covariate_vars %>% 
+      map(
+        .f = function(.var){
+          
+          adjusted_cif = cif_direct(
+            data = .cohort,
+            variable = .var,
+            ev_time = "days_to_event",
+            event = "outcome_status_num",
+            cause = 1,
+            method = "direct",
+            outcome_model = .csc_model,
+            conf_int = TRUE,
+            times = time_points
+          )
+          
+          
+          adjusted_cif$variable = .var
+          adjusted_cif$stroke_type = .stroke_type
+          adjusted_cif$medication = .medication
+          
+          return(adjusted_cif)
+        }
+      )
+    
+    return(adj_cum_inc)
+    
+  }) 
+
+adj_cuminc = unlist(adj_cuminc, recursive = FALSE)
+
+write_rds(adj_cuminc, here::here("data", "R10-medications_compute", "adj_cuminc.rds"))
+
+```
+
+

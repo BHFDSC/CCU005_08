@@ -1,0 +1,506 @@
+---
+title: "R09-survival_analysis"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, fig.width=9, fig.height=5.5) 
+
+
+
+source(here::here("R", "R00-functions.R"))
+
+library(tidycmprsk)
+library(tidyverse)
+library(cmprsk)
+library(ggsurvfit)
+
+
+```
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+cohort = cohort %>% 
+  mutate(
+    study_end_date = ymd("2024-07-31")
+  )
+
+```
+
+
+# Functions
+
+```{r}
+
+geom_stepribbon <- function(
+    mapping     = NULL,
+    data        = NULL,
+    stat        = "identity",
+    position    = "identity",
+    direction   = "hv", 
+    na.rm       = FALSE,
+    show.legend = NA,
+    inherit.aes = TRUE, ...) {
+  
+  layer(
+    data        = data,
+    mapping     = mapping,
+    stat        = stat,
+    geom        = GeomStepribbon,
+    position    = position,
+    show.legend = show.legend,
+    inherit.aes = inherit.aes,
+    params      = list(na.rm = na.rm, direction = direction, ... )
+  )
+  
+}
+
+#' @rdname geom_stepribbon
+#' @importFrom ggplot2 ggproto
+#' @format NULL
+#' @usage NULL
+#' @export
+GeomStepribbon <- ggproto(
+  "GeomStepribbon", GeomRibbon,
+  
+  extra_params = c("na.rm"),
+  
+  draw_group = function(data, panel_scales, coord, na.rm = FALSE, direction = "hv") {
+    
+    if (na.rm) data <- data[complete.cases(data[c("x", "ymin", "ymax")]), ]
+    data   <- rbind(data, data)
+    data   <- data[order(data$x), ]
+    data   <- ggplot2_stairstep(data[complete.cases(data["x"]), ], 
+                                direction = direction)
+    GeomRibbon$draw_group(data, panel_scales, coord, na.rm = na.rm)
+  }
+  
+)
+
+
+# code adapted from 
+# https://github.com/tidyverse/ggplot2/blob/9741da5050f81b7b5c012c56d02f45fc93d68f89/R/geom-path.r#L320
+ggplot2_stairstep <- function(data, direction =  c("hv", "vh", "mid")) {
+  direction <- match.arg(direction)
+  data <- as.data.frame(data)[order(data$x), ]
+  n <- nrow(data)
+  if (n <= 1) {
+    return(data[0, , drop = FALSE])
+  }
+  if (direction == "vh") {
+    xs <- rep(1:n, each = 2)[-2 * n]
+    ys <- c(1, rep(2:n, each = 2))
+  }
+  if (direction == "hv") {
+    xs <- c(1, rep(2:n, each = 2))
+    ys <- rep(1:n, each = 2)[-2 * n]
+  }
+  if (direction == "mid") {
+    xs <- rep(1:(n - 1), each = 2)
+    ys <- rep(1:n, each = 2)
+  }
+  
+  ymin <- c(data$ymin[ys])
+  ymax <- c(data$ymax[ys])
+  if (direction == "mid") {
+    gaps <- data$x[-1] - data$x[-n]
+    mid_x <- data$x[-n] + gaps/2
+    x <- c(data$x[1], mid_x[xs], data$x[n])
+    data_attr <- data[c(1, xs, n), 
+                      setdiff(names(data), c("x", "ymin", "ymax"))]
+  } else {
+    x <- data$x[xs]
+    ymin <- data$ymin[ys]
+    ymax <- data$ymax[ys]
+    data_attr <- data[xs, setdiff(names(data), c("x", "ymin", "ymax"))]
+  }
+  cbind(data.frame(x = x, ymin = ymin, ymax = ymax), data_attr)
+}
+
+```
+
+
+# 30-day All-Cause Mortality
+
+
+```{r}
+
+cohort_30d_all_cause = cohort %>% 
+  filter(stroke_ssnap == 1 | stroke_hes_apc == 1 | stroke_gdppr == 1) %>% 
+  mutate(
+    
+    # Date of event
+    outcome_date = pmin(date_of_death, study_end_date, index_stroke_date + days(30), na.rm = TRUE),
+    
+    # Days to event
+    days = (outcome_date - index_stroke_date) %>% as.numeric(),
+    
+    # Outcome status
+    status_num = case_when(
+      
+      # All-cause death
+      (date_of_death == outcome_date) ~ 1,
+      
+      # Censored
+      (study_end_date == outcome_date) ~ 0,
+      ((index_stroke_date + days(30)) == outcome_date) ~ 0
+      
+    ),
+    
+    status_fct = status_num %>%
+      factor() %>% 
+      fct_recode(
+        "Censored" = "0",
+        "All cause death" = "1"
+      ) %>% 
+      fct_relevel("Censored", "All cause death")
+  )
+
+
+
+```
+
+## By dataset membership
+
+
+```{r}
+
+
+survfit_30d_all_cause = survfit2(
+  Surv(days, status_num) ~ data_source_combination_ex_deaths,
+  data = cohort_30d_all_cause
+)
+
+mortality_30d_all_cause = survfit_30d_all_cause %>%
+  tidy_survfit() %>%
+  mutate(
+    data_source_combination = strata %>%
+      factor() %>%
+      fct_relevel("GDPPR only", "HES-APC only", "SSNAP only", "GDPPR & HES-APC",
+                  "GDPPR & SSNAP", "HES-APC & SSNAP", "GDPPR & HES-APC & SSNAP")
+  )
+
+
+mortality_30d_all_cause %>%
+  ggplot(aes(x = time, y = 1 - estimate,
+             min = 1 - conf.high, ymax = 1 - conf.low,
+             color = data_source_combination, fill = data_source_combination)) +
+  geom_step(linewidth = 0.5) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  theme_bw() +
+  labs(
+    x = "Days after stroke record",
+    y = "Cumulative mortality",
+    title = "30-Day All-Cause Mortality by Source Combination",
+    colour = "Source combination",
+    fill = "Source combination"
+  )  +
+  geom_stepribbon(alpha = 0.2, linewidth = 0.1) +
+  scale_y_continuous(labels = scales::percent_format()) 
+
+
+survfit_30d_all_cause %>%
+  tidy_survfit(type = "risk", times = 30) %>%
+  transmute(time, strata,
+            n_events = cum.event,
+            n = cum.event + cum.censor,
+            estimate = finalfit::round_tidy(estimate*100, 2),
+            conf.low = finalfit::round_tidy(conf.low*100, 2),
+            conf.high = finalfit::round_tidy(conf.high*100, 2)
+  ) %>%
+  mutate(across(c(n_events, n), .fns = function(.x){
+    case_when(
+      .x < 10 ~ 0,
+      TRUE ~ plyr::round_any(.x, 5)
+    )
+  }
+  )) %>% 
+mykable()
+
+
+
+```
+
+
+## By dataset membership and age-group
+
+
+```{r}
+
+
+survfit_30d_all_cause_age_group = survfit2(
+  Surv(days, status_num) ~ data_source_combination_ex_deaths + age_group,
+  data = cohort_30d_all_cause
+)
+
+mortality_30d_all_cause_age_group = survfit_30d_all_cause_age_group %>%
+  tidy_survfit() %>%
+  mutate(
+    age_group = strata %>%
+      str_extract("(?<=,\\s)[\\d+\\-]+"),
+    data_source_combination = strata %>%
+      str_extract("[[:alpha:]\\&\\- ]+(?=,\\s)") %>%
+      factor() %>%
+      fct_relevel("GDPPR only", "HES-APC only", "SSNAP only", "GDPPR & HES-APC",
+                  "GDPPR & SSNAP", "HES-APC & SSNAP", "GDPPR & HES-APC & SSNAP")
+  )
+
+mortality_30d_all_cause_age_group %>%
+  ggplot(aes(x = time, y = 1 - estimate,
+             min = 1 - conf.high, ymax = 1 - conf.low,
+             color = data_source_combination, fill = data_source_combination)) +
+  geom_step(linewidth = 0.5) +
+  facet_wrap(~ age_group, nrow = 1) +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  theme_bw() +
+  labs(
+    x = "Days after stroke record",
+    y = "Cumulative mortality",
+    title = "30-Day All-Cause Mortality by Source Combination & Age Group",
+    colour = "Source combination",
+    fill = "Source combination"
+  )  +
+  geom_stepribbon(alpha = 0.2, linewidth = 0.1) +
+  scale_y_continuous(labels = scales::percent_format()) 
+
+
+survfit_30d_all_cause_age_group %>%
+  tidy_survfit(type = "risk", times = 30) %>%
+  transmute(time, strata,
+            n_events = cum.event,
+            n = cum.event + cum.censor,
+            estimate = finalfit::round_tidy(estimate*100, 2),
+            conf.low = finalfit::round_tidy(conf.low*100, 2),
+            conf.high = finalfit::round_tidy(conf.high*100, 2)
+  ) %>%
+  mutate(across(c(n_events, n), .fns = function(.x){
+    case_when(
+      .x < 10 ~ 0,
+      TRUE ~ plyr::round_any(.x, 5)
+    )
+  }
+  )) %>% 
+  mykable()
+
+
+```
+
+# 30-day Cause-specific Mortality
+
+```{r}
+
+cohort_30d_cause_specific = cohort %>% 
+  filter(stroke_ssnap == 1 | stroke_hes_apc == 1 | stroke_gdppr == 1) %>% 
+  mutate(
+    
+    # Date of event
+    outcome_date = pmin(date_of_death, study_end_date, index_stroke_date + days(30), na.rm = TRUE),
+    
+    # Days to event
+    days = (outcome_date - index_stroke_date) %>% as.numeric(),
+    
+    # Outcome status
+    status_num = case_when(
+      # Coronary death (I20-I25)
+      (date_of_death == outcome_date)
+      & (str_sub(cause_of_death_underlying, 1,3) %in% c("I20", "I21", "I22", "I23", "I24", "I25")) ~ 1,
+      
+      # Respiratory death (J00-J99)
+      (date_of_death == outcome_date)
+      & (str_sub(cause_of_death_underlying, 1, 1) %in% c("J")) ~ 2,
+      
+      # Cerebrovascular death (I60-I69)
+      (date_of_death == outcome_date)
+      & (str_sub(cause_of_death_underlying, 1, 2) %in% c("I6")) ~ 3,
+      
+      # Other death
+      (date_of_death == outcome_date) ~ 4,
+      
+      # Censored
+      (study_end_date == outcome_date) ~ 0,
+      ((index_stroke_date + days(30)) == outcome_date) ~ 0
+      
+    ),
+    
+    status_fct = status_num %>%
+      factor() %>% 
+      fct_recode(
+        "Censored" = "0",
+        "Coronary death (I20-I25)" = "1",
+        "Respiratory death (J00-J99)" = "2",
+        "Cerebrovascular death (I60-I69)" = "3",
+        "Other death" = "4",
+      ) %>% 
+      fct_relevel("Censored", "Coronary death (I20-I25)",
+                  "Respiratory death (J00-J99)", "Cerebrovascular death (I60-I69)",
+                  "Other death")
+    
+  )
+
+
+```
+
+## By dataset membership
+
+```{r}
+
+cuminc_30d_cause_specific = tidycmprsk::cuminc(
+  Surv(days, status_fct) ~ data_source_combination_ex_deaths,
+  data = cohort_30d_cause_specific
+)
+
+mortality_30d_cause_specific = cuminc_30d_cause_specific %>% 
+  tidy_cuminc() %>%
+  mutate(
+    data_source_combination = strata,
+    outcome = outcome %>%
+      factor() %>% 
+      fct_relevel("Censored", "Coronary death (I20-I25)",
+                  "Respiratory death (J00-J99)", "Cerebrovascular death (I60-I69)",
+                  "Other death")
+  )
+
+mortality_30d_cause_specific %>% 
+  ggplot(aes(x = time, y = estimate,
+             min = conf.low, ymax = conf.high,
+             color = data_source_combination, fill = data_source_combination)) +
+  geom_step(linewidth = 0.5) +
+  facet_wrap(~ outcome, scales = "free_y") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_bw() +
+  labs(
+    x = "Days after stroke record",
+    y = "Cumulative incidence",
+    title = "30-Day Cause-Specific Mortality by Source Combination",
+    colour = "Source combination",
+    fill = "Source combination"
+  )  +
+  geom_stepribbon(alpha = 0.2, linewidth = 0.1)
+
+
+cuminc_30d_cause_specific %>% 
+  tidy_cuminc(times = 30) %>% 
+  transmute(time, outcome, strata,
+            n_events = cum.event,
+            n_censor = cum.censor,
+            estimate = finalfit::round_tidy(estimate*100, 2),
+            conf.low = finalfit::round_tidy(conf.low*100, 2),
+            conf.high = finalfit::round_tidy(conf.high*100, 2)
+  ) %>%
+  group_by(strata) %>% 
+  mutate(n = sum(n_events) + first(n_censor)) %>%
+  ungroup() %>% 
+  mutate(across(c(n_events, n_censor, n), .fns = function(.x){
+    case_when(
+      .x < 10 ~ 0,
+      TRUE ~ plyr::round_any(.x, 5)
+    )
+  }
+  )) %>%
+  mutate(across(c(estimate, conf.low, conf.high), .fns = function(.x){
+    case_when(
+      n_events < 10 ~ NA_character_,
+      TRUE ~ .x
+    )
+  }
+  )) %>%
+  relocate(n, .after = n_censor) %>% 
+  mykable()
+
+
+```
+
+## By dataset membership and age-group
+
+```{r}
+
+cuminc_30d_cause_specific_age_group = tidycmprsk::cuminc(
+  Surv(days, status_fct) ~ data_source_combination_ex_deaths + age_group,
+  data = cohort_30d_cause_specific
+)
+
+mortality_30d_cause_specific_age_group = cuminc_30d_cause_specific_age_group %>% 
+  tidy_cuminc() %>%
+  mutate(
+    age_group = strata %>%
+      str_extract("(?<=,\\s)[\\d+\\-]+"),
+    data_source_combination = strata %>%
+      str_extract("[[:alpha:]\\&\\- ]+(?=,\\s)") %>%
+      factor() %>%
+      fct_relevel("GDPPR only", "HES-APC only", "SSNAP only", "GDPPR & HES-APC",
+                  "GDPPR & SSNAP", "HES-APC & SSNAP", "GDPPR & HES-APC & SSNAP"),
+    outcome = outcome %>%
+      factor() %>% 
+      fct_relevel("Censored", "Coronary death (I20-I25)",
+                  "Respiratory death (J00-J99)", "Cerebrovascular death (I60-I69)",
+                  "Other death")
+  )
+
+mortality_30d_cause_specific_age_group %>% 
+  ggplot(aes(x = time, y = estimate,
+             min = conf.low, ymax = conf.high,
+             color = data_source_combination, fill = data_source_combination)) +
+  geom_step(linewidth = 0.5) +
+  facet_grid(str_wrap(outcome, width = 20) ~ age_group, scales = "free_y") +
+  scale_fill_brewer(palette = "Dark2") +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  theme_bw() +
+  labs(
+    x = "Days after stroke record",
+    y = "Cumulative incidence",
+    title = "30-Day Cause-Specific Mortality by Source Combination & Age Group",
+    colour = "Source combination",
+    fill = "Source combination"
+  )  +
+  geom_stepribbon(alpha = 0.2, linewidth = 0.1)
+
+
+cuminc_30d_cause_specific_age_group %>% 
+  tidy_cuminc(times = 30) %>% 
+  transmute(time, outcome, strata,
+            n_events = cum.event,
+            n_censor = cum.censor,
+            estimate = finalfit::round_tidy(estimate*100, 2),
+            conf.low = finalfit::round_tidy(conf.low*100, 2),
+            conf.high = finalfit::round_tidy(conf.high*100, 2)
+  ) %>%
+  group_by(strata) %>% 
+  mutate(n = sum(n_events) + first(n_censor)) %>%
+  ungroup() %>% 
+  mutate(across(c(n_events, n_censor, n), .fns = function(.x){
+    case_when(
+      .x < 10 ~ 0,
+      TRUE ~ plyr::round_any(.x, 5)
+    )
+  }
+  )) %>%
+  mutate(across(c(estimate, conf.low, conf.high), .fns = function(.x){
+    case_when(
+      n_events < 10 ~ NA_character_,
+      TRUE ~ .x
+    )
+  }
+  )) %>%
+  relocate(n, .after = n_censor) %>% 
+  mykable()
+
+
+```
+
+

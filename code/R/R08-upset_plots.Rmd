@@ -1,0 +1,159 @@
+---
+title: "R08-upset_plots"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(tidyverse)
+library(UpSetR)
+
+dir.create(here::here("outputs", "R08-upset_plots"), recursive = TRUE)
+
+source(here::here("R", "R00-functions.R"))
+
+```
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+cohort_non_fatal = cohort %>% 
+  filter(stroke_fatality == "Non-fatal")
+
+cohort_fatal = cohort %>% 
+  filter(stroke_fatality == "Fatal")
+
+```
+
+# Non-fatal strokes
+
+## Counts
+
+```{r}
+
+combination_source_stroke_type_non_fatal = cohort_non_fatal %>% 
+  count(stroke_type_harmonised,
+        gdppr_ischaemic, hes_apc_ischaemic, ssnap_ischaemic,
+        gdppr_haemorrhagic, hes_apc_haemorrhagic, ssnap_haemorrhagic,
+        gdppr_nos, hes_apc_nos, ssnap_missing,
+        name = "n_individuals"
+        ) %>%
+  mutate(across(-c(stroke_type_harmonised, n_individuals), ~ ifelse(is.na(.), FALSE, . == 1))) %>% 
+  mutate(total_individuals = sum(n_individuals)) %>% 
+  mutate(
+    n_individuals = case_when(
+      n_individuals < 10 ~ 0,
+      TRUE ~ plyr::round_any(n_individuals, 5)
+    ),
+    total_individuals = case_when(
+      total_individuals < 10 ~ 0,
+      TRUE ~ plyr::round_any(total_individuals, 5)
+    ),
+    pct = round(n_individuals / total_individuals * 100, 1)
+  ) %>% 
+  arrange(desc(n_individuals))
+
+write_csv(
+  combination_source_stroke_type_non_fatal,
+  here::here("outputs", "R08-upset_plots", "combination_source_stroke_type_non_fatal.csv")
+)
+
+```
+
+## Upset plot
+
+```{r}
+
+listInput = list(
+  "GDPPR: Ischaemic" = cohort_non_fatal %>% filter(gdppr_ischaemic == 1) %>% pull(person_id),
+  "HES-APC: Ischaemic" = cohort_non_fatal %>% filter(hes_apc_ischaemic == 1) %>% pull(person_id),
+  "SSNAP: Ischaemic" = cohort_non_fatal %>% filter(ssnap_ischaemic == 1) %>% pull(person_id),
+  "GDPPR: Haemorrhagic" = cohort_non_fatal %>% filter(gdppr_haemorrhagic == 1) %>% pull(person_id),
+  "HES-APC: Haemorrhagic" = cohort_non_fatal %>% filter(hes_apc_haemorrhagic == 1) %>% pull(person_id),
+  "SSNAP: Haemorrhagic" = cohort_non_fatal %>% filter(ssnap_haemorrhagic == 1) %>% pull(person_id),
+  "GDPPR: NOS" = cohort_non_fatal %>% filter(gdppr_nos == 1) %>% pull(person_id),
+  "HES-APC: NOS" = cohort_non_fatal %>% filter(hes_apc_nos == 1) %>% pull(person_id),
+  "SSNAP: Missing type" = cohort_non_fatal %>% filter(ssnap_missing == 1) %>% pull(person_id)
+)
+
+fig_upset_nonfatal = upset(fromList(listInput), order.by = "freq",
+                        show.numbers = FALSE, nsets = 9, nintersects = 15)
+
+
+fig_upset_nonfatal
+
+```
+
+# Fatal strokes
+
+## Counts
+
+```{r}
+
+combination_source_stroke_type_fatal = cohort_fatal %>% 
+  count(stroke_type_harmonised,
+        gdppr_ischaemic, hes_apc_ischaemic, ssnap_ischaemic, deaths_ischaemic,
+        gdppr_haemorrhagic, hes_apc_haemorrhagic, ssnap_haemorrhagic, deaths_haemorrhagic,
+        gdppr_nos, hes_apc_nos, ssnap_missing, deaths_nos,
+        name = "n_individuals"
+        ) %>%
+  mutate(across(-c(stroke_type_harmonised, n_individuals), ~ ifelse(is.na(.), FALSE, . == 1))) %>% 
+  mutate(total_individuals = sum(n_individuals)) %>% 
+  mutate(
+    n_individuals = case_when(
+      n_individuals < 10 ~ 0,
+      TRUE ~ plyr::round_any(n_individuals, 5)
+    ),
+    total_individuals = case_when(
+      total_individuals < 10 ~ 0,
+      TRUE ~ plyr::round_any(total_individuals, 5)
+    ),
+    pct = round(n_individuals / total_individuals * 100, 1)
+  ) %>% 
+  arrange(desc(n_individuals))
+
+write_csv(
+  combination_source_stroke_type_fatal,
+  here::here("outputs", "R08-upset_plots", "combination_source_stroke_type_fatal.csv")
+)
+
+```
+
+## Upset plot
+
+```{r}
+
+listInput = list(
+  "GDPPR: Ischaemic" = cohort_fatal %>% filter(gdppr_ischaemic == 1) %>% pull(person_id),
+  "HES-APC: Ischaemic" = cohort_fatal %>% filter(hes_apc_ischaemic == 1) %>% pull(person_id),
+  "SSNAP: Ischaemic" = cohort_fatal %>% filter(ssnap_ischaemic == 1) %>% pull(person_id),
+  "ONS Deaths: Ischaemic" = cohort_fatal %>% filter(deaths_ischaemic == 1) %>% pull(person_id),
+  "GDPPR: Haemorrhagic" = cohort_fatal %>% filter(gdppr_haemorrhagic == 1) %>% pull(person_id),
+  "HES-APC: Haemorrhagic" = cohort_fatal %>% filter(hes_apc_haemorrhagic == 1) %>% pull(person_id),
+  "SSNAP: Haemorrhagic" = cohort_fatal %>% filter(ssnap_haemorrhagic == 1) %>% pull(person_id),
+  "ONS Deaths: Haemorrhagic" = cohort_fatal %>% filter(deaths_haemorrhagic == 1) %>% pull(person_id),
+  "GDPPR: NOS" = cohort_fatal %>% filter(gdppr_nos == 1) %>% pull(person_id),
+  "HES-APC: NOS" = cohort_fatal %>% filter(hes_apc_nos == 1) %>% pull(person_id),
+  "SSNAP: Missing type" = cohort_fatal %>% filter(ssnap_missing == 1) %>% pull(person_id),
+  "ONS Deaths: NOS" = cohort_fatal %>% filter(deaths_nos == 1) %>% pull(person_id)
+)
+
+fig_upset_fatal = upset(fromList(listInput), order.by = "freq",
+                        show.numbers = FALSE, nsets = 12, nintersects = 15)
+
+
+fig_upset_fatal
+
+```
+

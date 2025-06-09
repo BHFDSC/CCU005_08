@@ -1,0 +1,187 @@
+---
+title: "R04-stroke_code_breakdown"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    number_sections: true
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(tidyverse)
+library(arules)
+
+dir.create(here::here("outputs", "R04b-apriori"), recursive = TRUE)
+
+source(here::here("R", "R00-functions.R"))
+
+```
+
+# Load datasets
+
+```{r}
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+
+```
+
+# Prepare
+
+## Compute 'overall' and 'no record in source' categories
+
+```{r}
+
+cohort = cohort %>% 
+  mutate(
+    overall = 1,
+    ssnap_no_record = is.na(ssnap_ischaemic) & is.na(ssnap_haemorrhagic) & is.na(ssnap_missing),
+    hes_apc_no_record = is.na(hes_apc_ischaemic) & is.na(hes_apc_haemorrhagic) & is.na(hes_apc_nos),
+    gdppr_no_record = is.na(gdppr_ischaemic) & is.na(gdppr_haemorrhagic) & is.na(gdppr_nos),
+    deaths_no_record = is.na(deaths_ischaemic) & is.na(deaths_haemorrhagic) & is.na(deaths_nos),
+  )
+
+```
+
+## Code-level dataset
+
+```{r}
+
+
+cohort_long = cohort %>% 
+  select(row_id, person_id, index_stroke_date, stroke_fatality, stroke_type_harmonised,
+         overall,
+         ssnap_ischaemic, ssnap_haemorrhagic, ssnap_missing, ssnap_no_record,
+         hes_apc_ischaemic, hes_apc_haemorrhagic, hes_apc_nos, hes_apc_no_record,
+         gdppr_ischaemic, gdppr_haemorrhagic, gdppr_nos, gdppr_no_record,
+         deaths_ischaemic, deaths_haemorrhagic, deaths_nos, deaths_no_record,
+         stroke_code_list, stroke_description_list, stroke_source_list, stroke_type_list) %>% 
+  mutate(
+    code = stroke_code_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    description = stroke_description_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    stroke_type = stroke_type_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+    source = stroke_source_list %>% 
+      str_extract_all('(?<=\\["|,")[^\\"]+(?=",|"\\])'),
+  ) %>% 
+  unnest(code, description, stroke_type, source)  %>%
+  mutate(source_code = paste0(source, ": ", code))
+
+
+
+```
+
+
+# Code prevelance
+
+```{r}
+
+
+code_prevelance = cohort_long %>% 
+  group_by(stroke_fatality, stroke_type, source, code) %>% 
+  summarise(
+    n_records = n(),
+    n_individuals = n_distinct(person_id)
+  )
+
+code_prevelance_tidy = code_prevelance %>% 
+  mutate(
+    across(
+      c(n_records, n_individuals),
+      ~case_when(
+        .x < 10 ~ 0,
+        TRUE ~ plyr::round_any(.x, 5)
+      )
+    )
+  )
+
+write_csv(
+  x = code_prevelance_tidy,
+  file = here::here("outputs", "R04b-apriori", "code_prevelance_tidy.csv")
+)
+
+```
+
+
+# Apriori association analysis
+
+## List of item sets to transactions
+
+```{r}
+
+
+stroke_fatality_group = c("all_stroke", "non_fatal_stroke", "fatal_stroke")
+
+apriori_rules = stroke_fatality_group %>% 
+  map_dfr(
+    .f = function(.stroke_fatality_group){
+      
+      # Filter for stroke fatality
+      if(.stroke_fatality_group == "all_stroke"){
+        
+        .cohort_filtered = cohort_long
+        
+      } else if (.stroke_fatality_group == "non_fatal_stroke"){
+        
+        .cohort_filtered = cohort_long %>% 
+          filter(stroke_fatality == "Fatal")
+        
+      } else if (.stroke_fatality_group == "fatal_stroke"){
+        
+        .cohort_filtered = cohort_long %>% 
+          filter(stroke_fatality == "Non-fatal")
+        
+      }
+      
+      # List of codes
+      .cohort_items = .cohort_filtered %>% 
+        group_by(person_id) %>%
+        summarise(items = list(source_code)) %>%
+        pull(items)
+      
+      # Convert the list of item sets into transactions
+      .cohort_transactions = as(.cohort_items, "transactions")
+      
+      # Generate association rules using the apriori algorithm
+      .rules = apriori(
+        .cohort_transactions,
+        parameter = list(
+          support = 0.001,
+          confidence = 0.001,
+          minlen = 2, maxlen = 2, maxtime = 30
+        )
+      )
+      
+      df_rules = .rules %>% 
+        as(., "data.frame") %>% 
+        as_tibble() %>% 
+        mutate(stroke_fatality = .stroke_fatality_group)
+      
+      return(df_rules)
+      
+    }
+  )
+
+apriori_rules_tidy = apriori_rules %>% 
+  mutate(across(c(support, confidence, coverage, lift), ~round(., 4))) %>% 
+  mutate(
+    count = case_when(
+      count < 10 ~ 0,
+      TRUE ~ plyr::round_any(count, 5)
+    )
+  )
+
+write_csv(
+  x = apriori_rules_tidy,
+  file = here::here("outputs", "R04b-apriori", "apriori_rules_tidy.csv")
+)
+
+
+```
+

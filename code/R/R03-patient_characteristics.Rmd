@@ -1,0 +1,242 @@
+---
+title: "R03-cohort_summary"
+author: "James Farrell (james.farrell@hdruk.ac.uk)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+---
+
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+
+library(tidyverse)
+library(finalfit)
+library(lubridate)
+library(kableExtra)
+
+source(here::here("R", "R00-functions.R"))
+
+cohort = read_rds(here::here("data", "cohort_cleaned.rds"))
+                  
+```
+
+
+
+
+
+```{r}
+
+# Explanatory variables
+
+explanatory_vars = c(
+  
+  # Stroke type
+  "stroke_type_harmonised",
+  
+  # Demographics
+  "age_on_stroke_date", "age_group", "sex", "ethnicity", "region",
+  "imd_19_quintile", "smoking_status",
+  
+  # Measurements
+  "body_mass_index_value", "egfr_value", "glycated_haemoglobin_value",
+  "systolic_blood_pressure_value", 
+  "hdl_cholesterol_value", "total_cholesterol_value",
+  
+  # Comorbidities
+  "angina",
+  "arrhythmia",
+  "atrial_fibrillation_or_myocardial_infarction",
+  "diabetes",
+  "hypercholesterolaemia",
+  "hypertension",
+  "obesity",
+  "cancer",
+  "chronic_kidney_disease",
+  "liver_disease",
+  "copd",
+  "dementia",
+  "depression",
+  "deep_vein_thrombosis",
+  "cci_fct",
+  "covid_infection_14_days",
+  "covid_infection_prior",
+  
+  # Prior medications
+  "prior_anticoagulants_flag",
+  "prior_antihypertensives_flag",
+  "prior_antiplatelets_flag",
+  "prior_lipid_lowering_drug_flag",
+  
+  # Others
+  "length_of_stay",
+  "nihss_arrival_fct",
+  "rankin_at_discharge_fct"
+  
+)
+
+
+
+```
+
+# Patient characteristics
+
+## By source membership
+
+```{r}
+
+cohort_summary_all = cohort %>% 
+  summary_factorlist(
+    dependent = NULL,
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    p = FALSE,
+    fit_id = TRUE
+  ) %>% 
+  rename(`All sources` = all)
+
+cohort_summary_gdppr = cohort %>%
+  filter(stroke_gdppr == 1) %>% 
+  summary_factorlist(
+    dependent = NULL,
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    p = FALSE,
+    fit_id = TRUE
+  ) %>% 
+  rename(`GDPPR` = all)
+
+cohort_summary_hes_apc = cohort %>%
+  filter(stroke_hes_apc == 1) %>% 
+  summary_factorlist(
+    dependent = NULL,
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    p = FALSE,
+    fit_id = TRUE
+  ) %>% 
+  rename(`HES-APC` = all)
+
+cohort_summary_ssnap = cohort %>%
+  filter(stroke_ssnap == 1) %>% 
+  summary_factorlist(
+    dependent = NULL,
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    p = FALSE,
+    fit_id = TRUE
+  ) %>% 
+  rename(`SSNAP` = all)
+
+cohort_summary_deaths = cohort %>%
+  filter(stroke_deaths == 1) %>% 
+  summary_factorlist(
+    dependent = NULL,
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    p = FALSE,
+    fit_id = TRUE
+  ) %>% 
+  rename(`ONS Deaths` = all)
+
+
+cohort_summary = cohort_summary_gdppr %>% 
+  full_join(cohort_summary_hes_apc, by = c("index", "fit_id", "label", "levels")) %>% 
+  full_join(cohort_summary_ssnap, by = c("index", "fit_id", "label", "levels")) %>% 
+  full_join(cohort_summary_deaths, by = c("index", "fit_id", "label", "levels")) %>%
+  full_join(cohort_summary_all, by = c("index", "fit_id", "label", "levels")) %>% 
+  select(-c(index, fit_id))  %>% 
+  ff_round_counts() %>% 
+  ff_redact_counts() %>%
+  ff_remove_ref_custom()
+
+cohort_summary_by_source_membership = cohort_summary %>%
+  mutate(
+    across(
+      c(`GDPPR`, `HES-APC`, `SSNAP`, `ONS Deaths`),
+      ~ if_else(
+        row_number() == 1,
+        paste0(
+          as.numeric(str_extract(.x, "\\d+")), " (",
+          round_tidy(
+            as.numeric(str_extract(.x, "\\d+"))
+            / as.numeric(str_extract(`All sources`[1], "\\d+")) * 100,
+            1
+          ), ")"
+        )
+        ,
+        .x
+      )
+    )
+  )
+
+write_csv(
+  cohort_summary_by_source_membership,
+  here::here("outputs", "R03-patient_characteristics", "cohort_summary_by_source_membership.csv")
+)
+
+cohort_summary_by_source_membership %>% 
+  mykable()
+
+
+```
+
+
+## By source combination
+
+
+```{r}
+
+cohort_summary_by_source_combination = cohort %>%
+  summary_factorlist(
+    dependent = "data_source_combination_all",
+    explanatory = explanatory_vars,
+    cont = "median",
+    add_col_totals = TRUE,
+    total_col = TRUE,
+    p = FALSE,
+    fit_id = FALSE
+  ) %>% 
+  ff_round_counts() %>% 
+  ff_redact_counts() %>%
+  ff_remove_ref_custom()
+
+cohort_summary_by_source_combination = cohort_summary_by_source_combination %>%
+  mutate(
+    across(
+      -c(`levels`, `label`, `Total`),
+      ~ if_else(
+        row_number() == 1,
+        paste0(
+          as.numeric(str_extract(.x, "\\d+")), " (",
+          round_tidy(
+            as.numeric(str_extract(.x, "\\d+"))
+            / as.numeric(str_extract(`Total`[1], "\\d+")) * 100,
+            1
+          ), ")"
+        )
+        ,
+        .x
+      )
+    )
+  )
+
+
+write_csv(
+  cohort_summary_by_source_combination,
+  here::here("outputs", "R03-patient_characteristics", "cohort_summary_by_source_combination.csv")
+)
+
+cohort_summary_by_source_combination %>% 
+  mykable()
+
+```
+
+
+
