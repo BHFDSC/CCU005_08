@@ -1,5 +1,7 @@
 # Assessing the impact of the COVID-19 pandemic on the accuracy, completeness and agreement of stroke cases across a national registry and whole population electronic health records
 
+**James Farrell, John Nolan, Roger Lambert, Ana Torralbo, Steffen E Petersen, Mevhibe Hocaoglu, Chris Tomlinson, Reecha Sofat, Qi Huang, Evan Kontopantelis, Martin James, Sarah Lessels, Jacqueline A L MacArthur, Angela Wood, William Whiteley, Spiros Denaxas, on behalf of the CVD-COVID-UK/COVID-IMPACT Consortium**
+
 ## Project description
 
 Stroke is a leading cause of death and disability in the UK, affecting over 100,000 people annually, with more than 1.3 million stroke survivors living with its lasting effects. High-quality stroke care is essential to improve patient outcomes, with prompt diagnosis and treatment being crucial to minimise brain damage and enhance recovery. To improve the quality of care of people affected by stroke, it is important to have a good understanding of the numbers of people that are affected by stroke, the quality of care that they receive and their outcomes. Equally, it’s important to understand how the COVID-19 pandemic impacted the way stroke is recorded in the NHS.
@@ -15,7 +17,7 @@ Combining data across different datasets can provide a more complete picture. It
 Carrying out these analyses across the entire population of England is complex and requires the development of complex computational instructions to efficiently extract, combine, and analyse relevant data across different sources.
 
 ## How to cite this work
-> Citation details to follow
+> Citation details to follow. Preprint available at: https://doi.org/10.64898/2025.12.03.25340732
 
 ## Contents
 
